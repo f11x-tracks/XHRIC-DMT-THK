@@ -134,8 +134,9 @@ print(f"Added condition data. Conditions found: {df['Condition'].value_counts().
 # Dash app
 app = dash.Dash(__name__)
 
-def make_boxplot(label, y_range=None):
-    dff = df[df['Label'] == label]
+def make_boxplot(label, y_range=None, filtered_df=None):
+    working_df = filtered_df if filtered_df is not None else df
+    dff = working_df[working_df['Label'] == label]
     if dff.empty:
         return html.Div(f"No data for {label}")
     fig = px.box(
@@ -223,9 +224,10 @@ def make_scatter_plot():
     
     return dcc.Graph(figure=fig)
 
-def make_radius_thickness_plots(y_range=None, show_trend_legend=True):
+def make_radius_thickness_plots(y_range=None, show_trend_legend=True, filtered_df=None):
+    working_df = filtered_df if filtered_df is not None else df
     # Filter for Layer 1 Thickness data with valid RADIUS
-    thickness_data = df[(df['Label'] == 'Layer 1 Thickness') & (df['RADIUS'].notna())].copy()
+    thickness_data = working_df[(working_df['Label'] == 'Layer 1 Thickness') & (working_df['RADIUS'].notna())].copy()
     
     if thickness_data.empty:
         return html.Div("No Layer 1 Thickness data with RADIUS available")
@@ -342,11 +344,12 @@ def make_radius_thickness_plots(y_range=None, show_trend_legend=True):
     
     return dcc.Graph(figure=fig)
 
-def make_radius_thickness_by_condition_plots(y_range=None, show_trend_legend=True):
+def make_radius_thickness_by_condition_plots(y_range=None, show_trend_legend=True, filtered_df=None):
+    working_df = filtered_df if filtered_df is not None else df
     # Filter for Layer 1 Thickness data with valid RADIUS and non-NA conditions
-    thickness_data = df[(df['Label'] == 'Layer 1 Thickness') & 
-                       (df['RADIUS'].notna()) & 
-                       (df['Condition'] != 'NA')].copy()
+    thickness_data = working_df[(working_df['Label'] == 'Layer 1 Thickness') & 
+                       (working_df['RADIUS'].notna()) & 
+                       (working_df['Condition'] != 'NA')].copy()
     
     if thickness_data.empty:
         return html.Div("No Layer 1 Thickness data with RADIUS and conditions available")
@@ -520,19 +523,20 @@ def make_files_table():
         table
     ])
 
-def make_statistical_summary_table():
+def make_statistical_summary_table(filtered_df=None):
     """Create a statistical summary table showing mean and std dev for each WaferID with radial groups"""
-    if df.empty:
+    working_df = filtered_df if filtered_df is not None else df
+    if working_df.empty:
         return html.Div("No data available for statistical summary")
     
     # Get unique labels and wafer IDs
-    unique_labels = sorted(df['Label'].unique())
-    unique_wafers = sorted(df['WaferID'].unique())
+    unique_labels = sorted(working_df['Label'].unique())
+    unique_wafers = sorted(working_df['WaferID'].unique())
     
     summary_data = []
     
     for wafer_id in unique_wafers:
-        wafer_data = df[df['WaferID'] == wafer_id]
+        wafer_data = working_df[working_df['WaferID'] == wafer_id]
         
         # Get condition for this wafer
         condition = wafer_data['Condition'].iloc[0] if not wafer_data.empty else 'NA'
@@ -685,18 +689,19 @@ def make_statistical_summary_table():
         summary_table
     ])
 
-def make_statistical_summary_by_condition_table():
+def make_statistical_summary_by_condition_table(filtered_df=None):
     """Create a statistical summary table showing mean and std dev grouped by Condition with radial groups"""
-    if df.empty:
+    working_df = filtered_df if filtered_df is not None else df
+    if working_df.empty:
         return html.Div("No data available for statistical summary")
     
     # Get unique conditions
-    unique_conditions = sorted(df['Condition'].unique())
+    unique_conditions = sorted(working_df['Condition'].unique())
     
     summary_data = []
     
     for condition in unique_conditions:
-        condition_data = df[df['Condition'] == condition]
+        condition_data = working_df[working_df['Condition'] == condition]
         
         # Only process Layer 1 Thickness data
         thickness_data = condition_data[condition_data['Label'] == 'Layer 1 Thickness']
@@ -1043,6 +1048,109 @@ def export_full_data_to_excel():
         print(f"Error exporting full data to Excel: {e}")
         return None, False
 
+def filter_outliers(data, method='iqr', threshold=1.5):
+    """
+    Filter outliers from data using various methods
+    
+    Parameters:
+    - data: pandas Series or DataFrame column
+    - method: 'iqr', 'zscore', 'modified_zscore', or 'percentile'
+    - threshold: threshold value for the method
+    
+    Returns:
+    - mask: boolean mask where True indicates valid (non-outlier) data
+    """
+    if data.empty or data.isna().all():
+        return pd.Series([True] * len(data), index=data.index)
+    
+    if method == 'iqr':
+        # Interquartile Range method
+        Q1 = data.quantile(0.25)
+        Q3 = data.quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - threshold * IQR
+        upper_bound = Q3 + threshold * IQR
+        mask = (data >= lower_bound) & (data <= upper_bound)
+        
+    elif method == 'zscore':
+        # Z-score method
+        z_scores = np.abs((data - data.mean()) / data.std())
+        mask = z_scores <= threshold
+        
+    elif method == 'modified_zscore':
+        # Modified Z-score using median absolute deviation
+        median = data.median()
+        mad = np.median(np.abs(data - median))
+        modified_z_scores = 0.6745 * (data - median) / mad
+        mask = np.abs(modified_z_scores) <= threshold
+        
+    elif method == 'percentile':
+        # Percentile method
+        lower_percentile = (100 - threshold) / 2
+        upper_percentile = 100 - lower_percentile
+        lower_bound = data.quantile(lower_percentile / 100)
+        upper_bound = data.quantile(upper_percentile / 100)
+        mask = (data >= lower_bound) & (data <= upper_bound)
+        
+    else:
+        # No filtering
+        mask = pd.Series([True] * len(data), index=data.index)
+    
+    return mask
+
+def get_filtered_dataframe(outlier_method='none', outlier_threshold=1.5):
+    """Get filtered dataframe based on outlier detection settings"""
+    if outlier_method == 'none' or df.empty:
+        return df
+    
+    # Apply outlier filtering only to Layer 1 Thickness data
+    filtered_df = df.copy()
+    thickness_mask = filtered_df['Label'] == 'Layer 1 Thickness'
+    
+    if thickness_mask.any():
+        thickness_data = filtered_df.loc[thickness_mask, 'Datum']
+        
+        # Apply different filtering strategies
+        if outlier_method in ['iqr', 'zscore', 'modified_zscore', 'percentile']:
+            # Global filtering - remove outliers across all data
+            valid_mask = filter_outliers(thickness_data, outlier_method, outlier_threshold)
+            outlier_indices = thickness_data[~valid_mask].index
+            filtered_df = filtered_df.drop(outlier_indices)
+            
+        elif outlier_method.endswith('_by_wafer'):
+            # Per-wafer filtering
+            base_method = outlier_method.replace('_by_wafer', '')
+            outlier_indices = []
+            
+            for wafer_id in filtered_df['WaferID'].unique():
+                wafer_thickness_mask = (filtered_df['Label'] == 'Layer 1 Thickness') & (filtered_df['WaferID'] == wafer_id)
+                if wafer_thickness_mask.any():
+                    wafer_thickness_data = filtered_df.loc[wafer_thickness_mask, 'Datum']
+                    valid_mask = filter_outliers(wafer_thickness_data, base_method, outlier_threshold)
+                    wafer_outlier_indices = wafer_thickness_data[~valid_mask].index
+                    outlier_indices.extend(wafer_outlier_indices)
+            
+            if outlier_indices:
+                filtered_df = filtered_df.drop(outlier_indices)
+                
+        elif outlier_method.endswith('_by_condition'):
+            # Per-condition filtering
+            base_method = outlier_method.replace('_by_condition', '')
+            outlier_indices = []
+            
+            for condition in filtered_df['Condition'].unique():
+                condition_thickness_mask = (filtered_df['Label'] == 'Layer 1 Thickness') & (filtered_df['Condition'] == condition)
+                if condition_thickness_mask.any():
+                    condition_thickness_data = filtered_df.loc[condition_thickness_mask, 'Datum']
+                    valid_mask = filter_outliers(condition_thickness_data, base_method, outlier_threshold)
+                    condition_outlier_indices = condition_thickness_data[~valid_mask].index
+                    outlier_indices.extend(condition_outlier_indices)
+            
+            if outlier_indices:
+                filtered_df = filtered_df.drop(outlier_indices)
+    
+    return filtered_df
+
 # Calculate global Layer 1 Thickness range for scaling
 thickness_data = df[df['Label'] == 'Layer 1 Thickness']['Datum']
 if not thickness_data.empty:
@@ -1055,46 +1163,88 @@ else:
 # Callback for Layer 1 Thickness boxplot
 @app.callback(
     Output('thickness-boxplot', 'children'),
-    Input('yscale-dropdown', 'value')
+    [Input('yscale-dropdown', 'value'),
+     Input('outlier-method-dropdown', 'value'),
+     Input('outlier-threshold-input', 'value')]
 )
-def update_thickness_boxplot(yscale_percent):
-    if thickness_range > 0:
-        y_min = thickness_min - (yscale_percent * thickness_range)
-        y_max = thickness_max + (yscale_percent * thickness_range)
-        y_range = [y_min, y_max]
+def update_thickness_boxplot(yscale_percent, outlier_method, outlier_threshold):
+    filtered_df = get_filtered_dataframe(outlier_method, outlier_threshold)
+    
+    # Recalculate thickness range based on filtered data
+    thickness_data = filtered_df[filtered_df['Label'] == 'Layer 1 Thickness']['Datum']
+    if not thickness_data.empty:
+        thickness_min = thickness_data.min()
+        thickness_max = thickness_data.max()
+        thickness_range = thickness_max - thickness_min
+        
+        if thickness_range > 0:
+            y_min = thickness_min - (yscale_percent * thickness_range)
+            y_max = thickness_max + (yscale_percent * thickness_range)
+            y_range = [y_min, y_max]
+        else:
+            y_range = None
     else:
         y_range = None
-    return make_boxplot('Layer 1 Thickness', y_range)
+        
+    return make_boxplot('Layer 1 Thickness', y_range, filtered_df)
 
 # Callback for RADIUS vs Thickness plots
 @app.callback(
     Output('radius-thickness-plots', 'children'),
     [Input('yscale-dropdown', 'value'),
-     Input('trend-legend-radio', 'value')]
+     Input('trend-legend-radio', 'value'),
+     Input('outlier-method-dropdown', 'value'),
+     Input('outlier-threshold-input', 'value')]
 )
-def update_radius_thickness_plots(yscale_percent, show_trend_legend):
-    if thickness_range > 0:
-        y_min = thickness_min - (yscale_percent * thickness_range)
-        y_max = thickness_max + (yscale_percent * thickness_range)
-        y_range = [y_min, y_max]
+def update_radius_thickness_plots(yscale_percent, show_trend_legend, outlier_method, outlier_threshold):
+    filtered_df = get_filtered_dataframe(outlier_method, outlier_threshold)
+    
+    # Recalculate thickness range based on filtered data
+    thickness_data = filtered_df[filtered_df['Label'] == 'Layer 1 Thickness']['Datum']
+    if not thickness_data.empty:
+        thickness_min = thickness_data.min()
+        thickness_max = thickness_data.max()
+        thickness_range = thickness_max - thickness_min
+        
+        if thickness_range > 0:
+            y_min = thickness_min - (yscale_percent * thickness_range)
+            y_max = thickness_max + (yscale_percent * thickness_range)
+            y_range = [y_min, y_max]
+        else:
+            y_range = None
     else:
         y_range = None
-    return make_radius_thickness_plots(y_range, show_trend_legend)
+        
+    return make_radius_thickness_plots(y_range, show_trend_legend, filtered_df)
 
 # Callback for RADIUS vs Thickness by Condition plots
 @app.callback(
     Output('radius-thickness-condition-plots', 'children'),
     [Input('yscale-dropdown', 'value'),
-     Input('trend-legend-radio', 'value')]
+     Input('trend-legend-radio', 'value'),
+     Input('outlier-method-dropdown', 'value'),
+     Input('outlier-threshold-input', 'value')]
 )
-def update_radius_thickness_condition_plots(yscale_percent, show_trend_legend):
-    if thickness_range > 0:
-        y_min = thickness_min - (yscale_percent * thickness_range)
-        y_max = thickness_max + (yscale_percent * thickness_range)
-        y_range = [y_min, y_max]
+def update_radius_thickness_condition_plots(yscale_percent, show_trend_legend, outlier_method, outlier_threshold):
+    filtered_df = get_filtered_dataframe(outlier_method, outlier_threshold)
+    
+    # Recalculate thickness range based on filtered data
+    thickness_data = filtered_df[filtered_df['Label'] == 'Layer 1 Thickness']['Datum']
+    if not thickness_data.empty:
+        thickness_min = thickness_data.min()
+        thickness_max = thickness_data.max()
+        thickness_range = thickness_max - thickness_min
+        
+        if thickness_range > 0:
+            y_min = thickness_min - (yscale_percent * thickness_range)
+            y_max = thickness_max + (yscale_percent * thickness_range)
+            y_range = [y_min, y_max]
+        else:
+            y_range = None
     else:
         y_range = None
-    return make_radius_thickness_by_condition_plots(y_range, show_trend_legend)
+        
+    return make_radius_thickness_by_condition_plots(y_range, show_trend_legend, filtered_df)
 
 # Callback for Excel export
 @app.callback(
@@ -1119,6 +1269,77 @@ def export_excel(n_clicks):
             ])
     return html.Div()
 
+# Callbacks for summary tables with outlier filtering
+@app.callback(
+    Output('wafer-summary-table', 'children'),
+    [Input('outlier-method-dropdown', 'value'),
+     Input('outlier-threshold-input', 'value')]
+)
+def update_wafer_summary_table(outlier_method, outlier_threshold):
+    filtered_df = get_filtered_dataframe(outlier_method, outlier_threshold)
+    return make_statistical_summary_table(filtered_df)
+
+@app.callback(
+    Output('condition-summary-table', 'children'),
+    [Input('outlier-method-dropdown', 'value'),
+     Input('outlier-threshold-input', 'value')]
+)
+def update_condition_summary_table(outlier_method, outlier_threshold):
+    filtered_df = get_filtered_dataframe(outlier_method, outlier_threshold)
+    return make_statistical_summary_by_condition_table(filtered_df)
+
+# Callback for condition average thickness plot
+@app.callback(
+    Output('condition-average-thickness-plot', 'children'),
+    [Input('outlier-method-dropdown', 'value'),
+     Input('outlier-threshold-input', 'value')]
+)
+def update_condition_average_thickness_plot(outlier_method, outlier_threshold):
+    filtered_df = get_filtered_dataframe(outlier_method, outlier_threshold)
+    return make_condition_average_thickness_plot(filtered_df)
+
+# Callback for condition standard deviation plot
+@app.callback(
+    Output('condition-std-dev-plot', 'children'),
+    [Input('outlier-method-dropdown', 'value'),
+     Input('outlier-threshold-input', 'value')]
+)
+def update_condition_std_dev_plot(outlier_method, outlier_threshold):
+    filtered_df = get_filtered_dataframe(outlier_method, outlier_threshold)
+    return make_condition_std_dev_plot(filtered_df)
+
+# Callback for outlier status display
+@app.callback(
+    Output('outlier-status', 'children'),
+    [Input('outlier-method-dropdown', 'value'),
+     Input('outlier-threshold-input', 'value')]
+)
+def update_outlier_status(outlier_method, outlier_threshold):
+    if outlier_method == 'none':
+        return html.Div()
+    
+    filtered_df = get_filtered_dataframe(outlier_method, outlier_threshold)
+    
+    # Count original and filtered Layer 1 Thickness data
+    original_count = len(df[df['Label'] == 'Layer 1 Thickness'])
+    filtered_count = len(filtered_df[filtered_df['Label'] == 'Layer 1 Thickness'])
+    removed_count = original_count - filtered_count
+    
+    if removed_count > 0:
+        return html.Div([
+            html.P(f"🔍 Outlier Filtering Active: {outlier_method.replace('_', ' ').title()} (threshold: {outlier_threshold})", 
+                   style={'color': 'blue', 'fontWeight': 'bold', 'margin': '5px 0'}),
+            html.P(f"📊 Removed {removed_count} outlier points out of {original_count} Layer 1 Thickness measurements ({removed_count/original_count*100:.1f}%)", 
+                   style={'color': 'orange', 'margin': '5px 0'})
+        ], style={'padding': '10px', 'backgroundColor': '#e7f3ff', 'borderRadius': '5px', 'border': '1px solid #b3d9ff'})
+    else:
+        return html.Div([
+            html.P(f"🔍 Outlier Filtering Active: {outlier_method.replace('_', ' ').title()} (threshold: {outlier_threshold})", 
+                   style={'color': 'blue', 'fontWeight': 'bold', 'margin': '5px 0'}),
+            html.P("✅ No outliers detected with current settings", 
+                   style={'color': 'green', 'margin': '5px 0'})
+        ], style={'padding': '10px', 'backgroundColor': '#e7f5e7', 'borderRadius': '5px', 'border': '1px solid #b3e6b3'})
+
 # Callback for full data Excel export
 @app.callback(
     Output('export-full-data-status', 'children'),
@@ -1141,6 +1362,141 @@ def export_full_data_excel(n_clicks):
                        style={'color': 'red', 'fontWeight': 'bold', 'margin': '10px 0'})
             ])
     return html.Div()
+
+# New function to create a bar chart showing average Layer 1 Thickness by condition
+def make_condition_average_thickness_plot(filtered_df=None):
+    """Create a bar chart showing average Layer 1 Thickness by condition"""
+    working_df = filtered_df if filtered_df is not None else df
+    
+    # Filter for Layer 1 Thickness data and exclude 'NA' conditions
+    thickness_data = working_df[(working_df['Label'] == 'Layer 1 Thickness') & 
+                               (working_df['Condition'] != 'NA')].copy()
+    
+    if thickness_data.empty:
+        return html.Div("No Layer 1 Thickness data with conditions available")
+    
+    # Calculate average thickness by condition
+    condition_stats = thickness_data.groupby('Condition')['Datum'].agg(['mean', 'std', 'count']).reset_index()
+    condition_stats.columns = ['Condition', 'Mean', 'StdDev', 'Count']
+    condition_stats['Mean'] = condition_stats['Mean'].round(1)
+    condition_stats['StdDev'] = condition_stats['StdDev'].round(1)
+    
+    # Sort by condition name for consistent display
+    condition_stats = condition_stats.sort_values('Condition')
+    
+    # Create line chart
+    fig = px.line(
+        condition_stats,
+        x='Condition',
+        y='Mean',
+        title='Average Layer 1 Thickness by Process Condition',
+        labels={
+            'Mean': 'Average Layer 1 Thickness',
+            'Condition': 'Process Condition'
+        },
+        markers=True  # Show markers on line
+    )
+    
+    # Add error bars for standard deviation
+    fig.update_traces(
+        error_y=dict(
+            type='data',
+            array=condition_stats['StdDev'],
+            visible=True
+        ),
+        mode='lines+markers+text',
+        text=condition_stats['Mean'].round(1),
+        texttemplate='%{text:.1f}',
+        textposition='top center',
+        marker=dict(size=8),
+        line=dict(width=3),
+        hovertemplate='<b>Condition: %{x}</b><br>' +
+                      'Average Thickness: %{y:.1f}<br>' +
+                      'Std Dev: %{error_y.array:.1f}<br>' +
+                      'Sample Count: %{customdata}<br>' +
+                      '<extra></extra>',
+        customdata=condition_stats['Count']
+    )
+    
+    # Update layout
+    fig.update_layout(
+        xaxis_title='Process Condition',
+        yaxis_title='Average Layer 1 Thickness',
+        height=500,
+        margin=dict(l=50, r=50, t=50, b=50),
+        showlegend=False
+    )
+    
+    # Rotate x-axis labels if there are many conditions
+    if len(condition_stats) > 5:
+        fig.update_layout(xaxis_tickangle=-45)
+    
+    return dcc.Graph(figure=fig)
+
+# New function to create a line chart showing standard deviation by condition
+def make_condition_std_dev_plot(filtered_df=None):
+    """Create a line chart showing standard deviation of Layer 1 Thickness by condition"""
+    working_df = filtered_df if filtered_df is not None else df
+    
+    # Filter for Layer 1 Thickness data and exclude 'NA' conditions
+    thickness_data = working_df[(working_df['Label'] == 'Layer 1 Thickness') & 
+                               (working_df['Condition'] != 'NA')].copy()
+    
+    if thickness_data.empty:
+        return html.Div("No Layer 1 Thickness data with conditions available")
+    
+    # Calculate standard deviation by condition
+    condition_stats = thickness_data.groupby('Condition')['Datum'].agg(['mean', 'std', 'count']).reset_index()
+    condition_stats.columns = ['Condition', 'Mean', 'StdDev', 'Count']
+    condition_stats['Mean'] = condition_stats['Mean'].round(1)
+    condition_stats['StdDev'] = condition_stats['StdDev'].round(1)
+    
+    # Sort by condition name for consistent display
+    condition_stats = condition_stats.sort_values('Condition')
+    
+    # Create line chart for standard deviation
+    fig = px.line(
+        condition_stats,
+        x='Condition',
+        y='StdDev',
+        title='Standard Deviation of Layer 1 Thickness by Process Condition',
+        labels={
+            'StdDev': 'Standard Deviation',
+            'Condition': 'Process Condition'
+        },
+        markers=True  # Show markers on line
+    )
+    
+    # Update traces for better visualization
+    fig.update_traces(
+        mode='lines+markers+text',
+        text=condition_stats['StdDev'].round(1),
+        texttemplate='%{text:.1f}',
+        textposition='top center',
+        marker=dict(size=8, color='red'),
+        line=dict(width=3, color='red'),
+        hovertemplate='<b>Condition: %{x}</b><br>' +
+                      'Standard Deviation: %{y:.1f}<br>' +
+                      'Mean Thickness: %{customdata[0]:.1f}<br>' +
+                      'Sample Count: %{customdata[1]}<br>' +
+                      '<extra></extra>',
+        customdata=condition_stats[['Mean', 'Count']].values
+    )
+    
+    # Update layout
+    fig.update_layout(
+        xaxis_title='Process Condition',
+        yaxis_title='Standard Deviation',
+        height=500,
+        margin=dict(l=50, r=50, t=50, b=50),
+        showlegend=False
+    )
+    
+    # Rotate x-axis labels if there are many conditions
+    if len(condition_stats) > 5:
+        fig.update_layout(xaxis_tickangle=-45)
+    
+    return dcc.Graph(figure=fig)
 
 app.layout = html.Div([
     html.H1("XML Data Analysis"),
@@ -1171,8 +1527,45 @@ app.layout = html.Div([
                 inline=True,
                 style={'display': 'inline-block'}
             )
+        ], style={'display': 'inline-block', 'marginRight': '30px'}),
+        
+        # Outlier Filtering Control
+        html.Div([
+            html.Label("Outlier Filtering:", style={'fontWeight': 'bold', 'marginRight': '10px'}),
+            dcc.Dropdown(
+                id='outlier-method-dropdown',
+                options=[
+                    {'label': 'No Filtering', 'value': 'none'},
+                    {'label': 'IQR Method (Global)', 'value': 'iqr'},
+                    {'label': 'IQR Method (Per Wafer)', 'value': 'iqr_by_wafer'},
+                    {'label': 'IQR Method (Per Condition)', 'value': 'iqr_by_condition'},
+                    {'label': 'Z-Score (Global)', 'value': 'zscore'},
+                    {'label': 'Z-Score (Per Wafer)', 'value': 'zscore_by_wafer'},
+                    {'label': 'Modified Z-Score (Global)', 'value': 'modified_zscore'},
+                    {'label': 'Percentile Method (Global)', 'value': 'percentile'}
+                ],
+                value='none',  # Default to no filtering
+                style={'width': '200px', 'display': 'inline-block'}
+            )
+        ], style={'display': 'inline-block', 'marginRight': '20px'}),
+        
+        # Outlier Threshold Control
+        html.Div([
+            html.Label("Threshold:", style={'fontWeight': 'bold', 'marginRight': '10px'}),
+            dcc.Input(
+                id='outlier-threshold-input',
+                type='number',
+                value=1.5,
+                min=0.5,
+                max=5.0,
+                step=0.1,
+                style={'width': '80px', 'display': 'inline-block'}
+            )
         ], style={'display': 'inline-block'})
     ], style={'margin': '20px 0', 'padding': '15px', 'backgroundColor': '#f0f0f0', 'borderRadius': '5px'}),
+    
+    # Outlier Status Display
+    html.Div(id='outlier-status', style={'margin': '10px 0'}),
     
     html.H2("Overall Data - Layer 1 Thickness"),
     html.Div(id='thickness-boxplot'),
@@ -1198,12 +1591,24 @@ app.layout = html.Div([
     html.Hr(),
     
     html.H2("Statistical Summary by WaferID"),
-    make_statistical_summary_table(),
+    html.Div(id='wafer-summary-table'),
     
     html.Hr(),
     
     html.H2("Statistical Summary by Condition"),
-    make_statistical_summary_by_condition_table(),
+    html.Div(id='condition-summary-table'),
+    
+    html.Hr(),
+    
+    # New section for average thickness by condition
+    html.H2("Average Layer 1 Thickness by Condition"),
+    html.Div(id='condition-average-thickness-plot'),
+    
+    html.Hr(),
+    
+    # New section for standard deviation by condition
+    html.H2("Standard Deviation of Layer 1 Thickness by Condition"),
+    html.Div(id='condition-std-dev-plot'),
     
     html.Hr(),
     
@@ -1277,6 +1682,7 @@ app.layout = html.Div([
                 'marginBottom': '10px'
             }
         ),
+       
         html.Div(id='export-full-data-status')
     ], style={'margin': '20px 0', 'padding': '15px', 'backgroundColor': '#f8f9fa', 'borderRadius': '5px'}),
     
