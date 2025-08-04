@@ -541,6 +541,10 @@ def make_statistical_summary_table(filtered_df=None):
         # Get condition for this wafer
         condition = wafer_data['Condition'].iloc[0] if not wafer_data.empty else 'NA'
         
+        # Get datetime (file datetime) for this wafer
+        file_datetime = wafer_data['datetime'].iloc[0] if not wafer_data.empty else None
+        file_datetime_str = file_datetime.strftime('%Y-%m-%d %H:%M:%S') if file_datetime else 'Unknown'
+        
         # Only process Layer 1 Thickness data
         thickness_data = wafer_data[wafer_data['Label'] == 'Layer 1 Thickness']
         label_data = thickness_data['Datum']
@@ -565,6 +569,7 @@ def make_statistical_summary_table(filtered_df=None):
             
             summary_data.append({
                 'WaferID': wafer_id,
+                'File DateTime': file_datetime_str,
                 'Condition': condition,
                 'Measurement': 'Layer 1 Thickness',
                 'Mean': round(mean_val, 1),
@@ -638,6 +643,7 @@ def make_statistical_summary_table(filtered_df=None):
         data=summary_data,
         columns=[
             {"name": "Wafer ID", "id": "WaferID"},
+            {"name": "File DateTime", "id": "File DateTime"},
             {"name": "Condition", "id": "Condition"},
             {"name": "Measurement Type", "id": "Measurement"},
             {"name": "Mean", "id": "Mean", "type": "numeric", "format": {"specifier": ".1f"}},
@@ -865,6 +871,10 @@ def export_summary_tables_to_excel():
                 wafer_data = df[df['WaferID'] == wafer_id]
                 condition = wafer_data['Condition'].iloc[0] if not wafer_data.empty else 'NA'
                 
+                # Get datetime (file datetime) for this wafer
+                file_datetime = wafer_data['datetime'].iloc[0] if not wafer_data.empty else None
+                file_datetime_str = file_datetime.strftime('%Y-%m-%d %H:%M:%S') if file_datetime else 'Unknown'
+                
                 thickness_data = wafer_data[wafer_data['Label'] == 'Layer 1 Thickness']
                 label_data = thickness_data['Datum']
                 
@@ -885,6 +895,7 @@ def export_summary_tables_to_excel():
                     
                     wafer_summary_data.append({
                         'WaferID': wafer_id,
+                        'File DateTime': file_datetime_str,
                         'Condition': condition,
                         'Measurement': 'Layer 1 Thickness',
                         'Mean': round(mean_val, 1),
